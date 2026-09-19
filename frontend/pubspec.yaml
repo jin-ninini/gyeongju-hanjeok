@@ -1,0 +1,69 @@
+name: gyeongju_hanjeok
+version: 1.0.1+2
+publish_to: none
+description: 혼잡을 피하고 한적한 경주 여행 코스를 추천하는 Flutter 앱
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  dio: ^5.10.0
+  flutter_dotenv: ^6.0.1
+  geolocator: ^14.0.3
+  shared_preferences: ^2.5.5
+  url_launcher: ^6.3.2
+  webview_flutter: ^4.14.1
+  kakao_flutter_sdk_navi: ^2.0.0+1
+  kakao_flutter_sdk_common: ^2.0.0+1
+  kakao_flutter_sdk_share: ^2.0.0+1
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.1
+  app_links: ^7.0.0
+  share_plus: ^13.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  fonts:
+    - family: MaruBuri
+      fonts:
+        - asset: assets/fonts/MaruBuri-ExtraLight.otf
+          weight: 200
+        - asset: assets/fonts/MaruBuri-Light.otf
+          weight: 300
+        - asset: assets/fonts/MaruBuri-Regular.otf
+          weight: 400
+        - asset: assets/fonts/MaruBuri-SemiBold.otf
+          weight: 600
+        - asset: assets/fonts/MaruBuri-Bold.otf
+          weight: 700
+
+    - family: WantedSans
+      fonts:
+        - asset: assets/fonts/WantedSans-Regular.otf
+          weight: 400
+        - asset: assets/fonts/WantedSans-Medium.otf
+          weight: 500
+        - asset: assets/fonts/WantedSans-SemiBold.otf
+          weight: 600
+        - asset: assets/fonts/WantedSans-Bold.otf
+          weight: 700
+        - asset: assets/fonts/WantedSans-ExtraBold.otf
+          weight: 800
+        - asset: assets/fonts/WantedSans-Black.otf
+          weight: 900
+
+  assets:
+    - .env
+    - assets/images/
+    - assets/images/course/
+    - assets/icon.png
+    - assets/splash.png

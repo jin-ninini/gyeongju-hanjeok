@@ -1,0 +1,13 @@
+# === 프로젝트 루트 정리 ===
+# 폴더 밖(backend/, frontend/ 바깥)에 있는 개인 작업 메모/기획 문서(.txt)는 업로드하지 않음
+/*.txt
+
+# 사용 예정 없는/현재 비어있는 백업 폴더
+/flutter_lib_backups/
+
+# 자체 git 이력을 가진 별도의 배포용 미러 저장소 (중첩 .git 포함, 이 repo와 분리 관리)
+/backend/gyeongju-hanjeok-deploy/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db

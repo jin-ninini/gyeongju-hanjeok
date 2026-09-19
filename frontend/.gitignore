@@ -1,0 +1,24 @@
+# Flutter / Dart 빌드 산출물
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+
+# IDE
+.idea/
+
+# 환경 변수 / 비밀값
+.env
+
+# Android 서명 관련 (android/.gitignore 에서 key.properties, *.jks 등은 별도 관리)
+android/.gradle/
+android/.kotlin/
+android/local.properties
+
+# 백업/압축 파일, 빌드 에러 로그
+*.zip
+*.bak
+build_release_error.txt
