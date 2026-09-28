@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from .config import get_settings
@@ -35,6 +35,36 @@ class KnowledgeDocument(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+
+
+# CHATBOT_CACHE_V2_START
+class ChatAnswerCacheRecord(Base):
+    """안정적인 지식형 챗봇 답변만 저장하는 소형 캐시 테이블입니다."""
+
+    __tablename__ = "chat_answer_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    place_id: Mapped[str] = mapped_column(String(64), index=True)
+    place_name: Mapped[str] = mapped_column(String(255), index=True)
+    intent: Mapped[str] = mapped_column(String(64), index=True)
+    question_example: Mapped[str] = mapped_column(String(500))
+    answer: Mapped[str] = mapped_column(String)
+    sources_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+# CHATBOT_CACHE_V2_END
+
 class JourneyRecord(Base):
     __tablename__ = "journeys"
     journey_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
@@ -60,6 +90,7 @@ class UserRecord(Base):
     password_hash: Mapped[str] = mapped_column(String(512))
     nickname: Mapped[str] = mapped_column(String(40))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    role: Mapped[str] = mapped_column(String(20), default="user", index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -92,9 +123,11 @@ class UserConsentRecord(Base):
     terms_agreed: Mapped[bool] = mapped_column(Boolean, default=False)
     privacy_agreed: Mapped[bool] = mapped_column(Boolean, default=False)
     location_agreed: Mapped[bool] = mapped_column(Boolean, default=False)
+    notification_agreed: Mapped[bool] = mapped_column(Boolean, default=False)
     terms_version: Mapped[str] = mapped_column(String(32))
     privacy_version: Mapped[str] = mapped_column(String(32))
     location_version: Mapped[str] = mapped_column(String(32))
+    notification_version: Mapped[str] = mapped_column(String(32), default="2026-09-21")
     agreed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -311,6 +344,182 @@ class SharedRouteInviteRecord(Base):
     )
 
 
+class RouteCompanionRequestRecord(Base):
+    __tablename__ = "route_companion_requests"
+
+    request_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    shared_route_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("shared_routes.shared_route_id", ondelete="CASCADE"),
+        index=True,
+    )
+    requester_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    recipient_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    responded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class NotificationRecord(Base):
+    __tablename__ = "notifications"
+
+    notification_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    type: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(160))
+    message: Mapped[str] = mapped_column(String(500), default="")
+    post_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    friendship_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    shared_route_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    route_request_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    is_read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+
+class PushDeviceTokenRecord(Base):
+    __tablename__ = "push_device_tokens"
+
+    push_token_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    token: Mapped[str] = mapped_column(
+        String(512),
+        unique=True,
+        index=True,
+    )
+    platform: Mapped[str] = mapped_column(String(20), default="android")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+class PasswordResetCodeRecord(Base):
+    __tablename__ = "password_reset_codes"
+
+    reset_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        index=True,
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    reset_token_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    reset_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+class CommunityImageRecord(Base):
+    __tablename__ = "community_images"
+
+    image_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+    )
+    original_name: Mapped[str] = mapped_column(String(255), default="community-image")
+    content_type: Mapped[str] = mapped_column(String(64))
+    image_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        index=True,
+    )
+
+
 class CommunityPostRecord(Base):
     __tablename__ = "community_posts"
 
@@ -464,6 +673,69 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+
+    # 기존 DB의 users 테이블에는 create_all만으로 새 컬럼이 추가되지 않으므로
+    # 관리자 권한 컬럼을 안전하게 보정합니다.
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if "users" not in inspector.get_table_names():
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("users")}
+    if "role" not in columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'user'")
+            )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE users SET role = 'user' WHERE role IS NULL OR role = ''")
+        )
+
+
+    # 기존 user_consents 테이블에 알림 동의 컬럼을 추가합니다.
+    inspector = inspect(engine)
+    if "user_consents" in inspector.get_table_names():
+        consent_columns = {
+            column["name"]
+            for column in inspector.get_columns("user_consents")
+        }
+
+        with engine.begin() as connection:
+            if "notification_agreed" not in consent_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE user_consents "
+                        "ADD COLUMN notification_agreed BOOLEAN DEFAULT FALSE"
+                    )
+                )
+
+            if "notification_version" not in consent_columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE user_consents "
+                        "ADD COLUMN notification_version VARCHAR(32) "
+                        "DEFAULT '2026-09-21'"
+                    )
+                )
+
+            connection.execute(
+                text(
+                    "UPDATE user_consents "
+                    "SET notification_agreed = FALSE "
+                    "WHERE notification_agreed IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "UPDATE user_consents "
+                    "SET notification_version = '2026-09-21' "
+                    "WHERE notification_version IS NULL "
+                    "OR notification_version = ''"
+                )
+            )
 
 
 def get_db():

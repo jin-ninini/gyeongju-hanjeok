@@ -26,7 +26,19 @@ from .clients import (
     normalize_name,
 )
 from .config import Settings
+from .chatbot_knowledge import (
+    HeritageLookupClient,
+    cacheable_answer,
+    classify_stable_intent,
+    contexts_hash,
+    direct_answer_from_heritage,
+    is_dynamic_query,
+    local_place_context,
+    make_cache_key,
+    resolved_generation_query,
+)
 from .db import (
+    ChatAnswerCacheRecord,
     CommunityPostRecord,
     JourneyRecord,
     KnowledgeDocument,
@@ -7197,15 +7209,30 @@ class RagService:
         self.openai = OpenAIClient(settings)
         self.tour = TourApiClient(settings)
         self.official_tour = GyeongjuOfficialTourClient(settings)
+        self.heritage = HeritageLookupClient(settings)
 
     @classmethod
     def _place_aliases(cls, title: str) -> list[str]:
-        normalized = normalize_name(title)
-        aliases = [normalized] if normalized else []
+        # 관광공사 제목 뒤에 붙는 "[유네스코 세계유산]" 같은 설명 꼬리표를
+        # 장소명 인식에서 제외합니다.
+        canonical_title = _canonical_place_title(title)
+        candidates = [canonical_title, title]
 
+        aliases: list[str] = []
         gyeongju = normalize_name("경주")
-        if normalized.startswith(gyeongju) and len(normalized) >= len(gyeongju) + 2:
-            aliases.append(normalized[len(gyeongju):])
+
+        for candidate in candidates:
+            normalized = normalize_name(candidate)
+            if not normalized:
+                continue
+
+            aliases.append(normalized)
+
+            if (
+                normalized.startswith(gyeongju)
+                and len(normalized) >= len(gyeongju) + 2
+            ):
+                aliases.append(normalized[len(gyeongju):])
 
         return list(
             dict.fromkeys(
@@ -7252,12 +7279,40 @@ class RagService:
         if direct is not None:
             return direct
 
-        # "거기 몇 시까지야?" 같은 후속 질문이면 가장 최근 사용자 발화부터 거슬러 올라가
-        # 장소명을 찾습니다. 오래된 대화의 장소가 현재 질문을 덮어쓰지 않도록 역순 탐색합니다.
+        # 이전 장소를 이어받는 것은 "거기", "그곳", "그거"처럼
+        # 실제로 앞 대화를 가리키는 후속 질문일 때만 허용합니다.
+        # 새 장소명을 인식하지 못했다는 이유만으로 직전 장소를 재사용하면
+        # "첨성대 → 불국사"처럼 장소가 바뀐 질문에서 잘못된 답변이 나올 수 있습니다.
+        normalized_query = normalize_name(query)
+        contextual_tokens = (
+            "거기",
+            "거긴",
+            "거기는",
+            "거기의",
+            "그곳",
+            "그곳은",
+            "그곳의",
+            "그거",
+            "그건",
+            "그게",
+            "그장소",
+            "그관광지",
+        )
+
+        if not any(
+            normalize_name(token) in normalized_query
+            for token in contextual_tokens
+        ):
+            return None
+
         for turn in reversed(history):
             if turn.role != "user":
                 continue
-            match = self._exact_place_record(turn.content, records)
+
+            match = self._exact_place_record(
+                turn.content,
+                records,
+            )
             if match is not None:
                 return match
 
@@ -7447,6 +7502,220 @@ class RagService:
             bool(values),
         )
 
+
+    # CHATBOT_CACHE_V2_START
+    @staticmethod
+    def _cache_expired(value: datetime | None) -> bool:
+        if value is None:
+            return False
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value <= datetime.now(timezone.utc)
+
+    def _cached_answer(self, cache_key: str) -> ChatAnswerCacheRecord | None:
+        row = self.db.get(ChatAnswerCacheRecord, cache_key)
+        if row is None:
+            return None
+        if self._cache_expired(row.expires_at):
+            try:
+                self.db.delete(row)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+            return None
+        row.hit_count = int(row.hit_count or 0) + 1
+        row.updated_at = datetime.now(timezone.utc)
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+        return row
+
+    @staticmethod
+    def _cache_hits(row: ChatAnswerCacheRecord) -> list[RagHit]:
+        raw_hits = (row.sources_json or {}).get("hits") or []
+        hits: list[RagHit] = []
+        for item in raw_hits:
+            try:
+                hits.append(RagHit.model_validate(item))
+            except Exception:
+                continue
+        return hits
+
+    def _store_answer_cache(
+        self,
+        *,
+        cache_key: str,
+        exact_place: PlaceRecord,
+        intent: str,
+        question: str,
+        answer: str,
+        hits: list[RagHit],
+        contexts: list[dict],
+    ) -> None:
+        if not cacheable_answer(answer):
+            return
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=180)
+        payload = {
+            "hits": [hit.model_dump(mode="json") for hit in hits],
+            "official_only": True,
+        }
+        row = self.db.get(ChatAnswerCacheRecord, cache_key)
+        if row is None:
+            row = ChatAnswerCacheRecord(
+                cache_key=cache_key,
+                place_id=exact_place.place_id,
+                place_name=exact_place.title,
+                intent=intent,
+                question_example=question,
+                answer=answer.strip(),
+                sources_json=payload,
+                source_hash=contexts_hash(contexts),
+                hit_count=0,
+                created_at=now,
+                updated_at=now,
+                expires_at=expires_at,
+            )
+            self.db.add(row)
+        else:
+            row.place_name = exact_place.title
+            row.intent = intent
+            row.question_example = question
+            row.answer = answer.strip()
+            row.sources_json = payload
+            row.source_hash = contexts_hash(contexts)
+            row.updated_at = now
+            row.expires_at = expires_at
+        try:
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+
+    def _exact_knowledge_contexts(
+        self,
+        exact_place: PlaceRecord,
+        limit: int = 6,
+    ) -> tuple[list[dict], list[RagHit]]:
+        aliases = self._place_aliases(exact_place.title)
+        if not aliases:
+            return [], []
+        rows = list(self.db.scalars(select(KnowledgeDocument)).all())
+        contexts: list[dict] = []
+        hits: list[RagHit] = []
+        for row in rows:
+            searchable = normalize_name(f"{row.title} {row.text[:1600]}")
+            if not any(alias in searchable for alias in aliases):
+                continue
+            contexts.append({
+                "source": "경주한적 DB",
+                "title": row.title,
+                "category": row.category,
+                "overview": row.text,
+            })
+            hits.append(RagHit(
+                source_type="etiquette",
+                place_id=row.doc_id,
+                title=row.title,
+                category=row.category,
+                similarity=0.98,
+                overview=row.text,
+            ))
+            if len(contexts) >= limit:
+                break
+        return contexts, hits
+
+    async def _stable_exact_answer(
+        self,
+        *,
+        query: str,
+        history: list[ChatTurn],
+        exact_place: PlaceRecord,
+        intent: str,
+    ) -> RagSearchResponse | None:
+        if is_dynamic_query(query):
+            return None
+
+        cache_key = make_cache_key(exact_place.place_id, intent)
+        cached = self._cached_answer(cache_key)
+        if cached is not None:
+            return RagSearchResponse(
+                query=query,
+                answer=cached.answer,
+                hits=self._cache_hits(cached),
+                grounded=True,
+            )
+
+        heritage = None
+        try:
+            heritage = await asyncio.wait_for(
+                self.heritage.lookup(exact_place.title), timeout=7.0
+            )
+        except asyncio.TimeoutError:
+            heritage = None
+
+        contexts: list[dict] = [
+            local_place_context(exact_place.data or {}, title=exact_place.title)
+        ]
+        hits: list[RagHit] = [self._place_hit(exact_place, 1.0)]
+
+        local_contexts, local_hits = self._exact_knowledge_contexts(exact_place)
+        contexts.extend(local_contexts)
+        hits.extend(local_hits)
+
+        if heritage is not None:
+            contexts.insert(0, heritage.to_context())
+            hits.insert(0, RagHit.model_validate(heritage.to_hit_dict()))
+            direct = direct_answer_from_heritage(exact_place.title, intent, heritage)
+            if direct:
+                self._store_answer_cache(
+                    cache_key=cache_key,
+                    exact_place=exact_place,
+                    intent=intent,
+                    question=query,
+                    answer=direct,
+                    hits=hits[:5],
+                    contexts=contexts,
+                )
+                return RagSearchResponse(
+                    query=query, answer=direct, hits=hits[:5], grounded=True
+                )
+
+        meaningful = any(
+            ctx.get("overview")
+            or ctx.get("heritage_era")
+            or ctx.get("heritage_designation")
+            for ctx in contexts
+        )
+        if not meaningful:
+            return None
+
+        generation_query = resolved_generation_query(exact_place.title, query)
+        answer = (
+            await self.openai.answer_with_context(
+                generation_query, contexts, history=history
+            )
+        ).strip()
+
+        if answer == "__RAG_FALLBACK__":
+            return None
+
+        if cacheable_answer(answer):
+            self._store_answer_cache(
+                cache_key=cache_key,
+                exact_place=exact_place,
+                intent=intent,
+                question=query,
+                answer=answer,
+                hits=hits[:5],
+                contexts=contexts,
+            )
+
+        return RagSearchResponse(
+            query=query, answer=answer, hits=hits[:5], grounded=True
+        )
+    # CHATBOT_CACHE_V2_END
+
     async def search(
         self,
         query: str,
@@ -7455,118 +7724,345 @@ class RagService:
     ) -> RagSearchResponse:
         history = history or []
 
-        # 의미검색에는 직전 사용자 발화를 보강해 지시어("그거", "거기") 문맥을 살립니다.
-        last_user_turn = next(
-            (turn.content for turn in reversed(history) if turn.role == "user"),
-            None,
-        )
-        search_text = f"{last_user_turn}\n{query}" if last_user_turn else query
+        # -----------------------------------------------------------
+        # 1. 현재 질문을 기준으로 의미검색
+        # -----------------------------------------------------------
+        # 직전 사용자 질문을 임베딩 문장에 무조건 합치면
+        # 관광지가 바뀐 질문에서 이전 장소가 검색 결과를 오염시킬 수 있습니다.
+        # "거기", "그곳" 같은 실제 후속 질문의 장소 연결은
+        # _resolve_exact_place()에서 별도로 처리합니다.
+        search_text = query
 
-        # 장소명 탐지는 embedding보다 먼저 수행합니다. embedding이 아직 없는 레코드도
-        # 운영시간/요금 같은 정형 질문에는 사용할 수 있습니다.
-        all_place_records = list(self.db.scalars(select(PlaceRecord)).all())
-        exact_place = self._resolve_exact_place(query, history, all_place_records)
-        structured_fields = self._structured_fields(query)
-
-        if exact_place is not None and structured_fields:
-            exact_place = await self._refresh_place_record(exact_place, structured_fields)
-            answer, grounded = self._structured_answer(exact_place, structured_fields)
-            return RagSearchResponse(
-                query=query,
-                answer=answer,
-                hits=[self._place_hit(exact_place, 1.0)],
-                grounded=grounded,
-            )
-
-        vector = (await self.openai.embeddings([search_text]))[0]
-
-        place_records = [record for record in all_place_records if record.embedding]
-        doc_records = list(
+        # -----------------------------------------------------------
+        # 2. 장소명과 구조화 질문을 먼저 처리
+        # -----------------------------------------------------------
+        # 운영시간·휴무일·요금·주차 등은
+        # 일반 OpenAI 지식보다 관광공사/경주시 공식정보를 우선합니다.
+        all_place_records = list(
             self.db.scalars(
-                select(KnowledgeDocument).where(KnowledgeDocument.embedding.is_not(None))
+                select(PlaceRecord)
             ).all()
         )
 
-        if not place_records and not doc_records and exact_place is None:
-            raise ValueError(
-                "RAG 인덱스가 없습니다. 먼저 POST /api/v1/admin/sync를 실행하세요."
+        exact_place = self._resolve_exact_place(
+            query,
+            history,
+            all_place_records,
+        )
+
+        structured_fields = self._structured_fields(
+            query
+        )
+
+        if (
+            exact_place is not None
+            and structured_fields
+        ):
+            exact_place = (
+                await self._refresh_place_record(
+                    exact_place,
+                    structured_fields,
+                )
             )
 
-        exact_aliases = self._place_aliases(exact_place.title) if exact_place is not None else []
+            answer, grounded = (
+                self._structured_answer(
+                    exact_place,
+                    structured_fields,
+                )
+            )
 
-        def place_score(record: PlaceRecord) -> float:
-            score = _cosine(vector, record.embedding or [])
-            if exact_place is not None and record.place_id == exact_place.place_id:
-                # 질문에 명시된 장소는 의미검색 오차로 밀리지 않도록 우선합니다.
-                score = max(score, 0.99)
-            return score
-
-        def doc_score(record: KnowledgeDocument) -> float:
-            score = _cosine(vector, record.embedding or [])
-            if exact_aliases:
-                searchable = normalize_name(f"{record.title} {record.text[:800]}")
-                if any(alias in searchable for alias in exact_aliases):
-                    score = max(score, 0.96)
-            return score
-
-        place_scored = sorted(
-            ((place_score(record), "place", record) for record in place_records),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-
-        # exact 장소가 아직 embedding되지 않았더라도 일반 장소 질문에서는 컨텍스트에 포함합니다.
-        if exact_place is not None and all(
-            record.place_id != exact_place.place_id for _, _, record in place_scored
-        ):
-            place_scored.insert(0, (0.99, "place", exact_place))
-
-        doc_scored = sorted(
-            ((doc_score(record), "etiquette", record) for record in doc_records),
-            key=lambda item: item[0],
-            reverse=True,
-        )
-
-        # 지식문서 전체를 LLM에 넘기지 않습니다. 장소 top-k와 지식문서 상위 N개만 사용해
-        # 역사·접근성·예절 문서가 무관한 질문에 과도하게 섞이는 현상을 줄입니다.
-        knowledge_limit = max(3, min(6, top_k + 1))
-        selected = sorted(
-            place_scored[:top_k] + doc_scored[:knowledge_limit],
-            key=lambda item: item[0],
-            reverse=True,
-        )
-
-        if not selected or selected[0][0] < self.settings.rag_min_similarity:
             return RagSearchResponse(
                 query=query,
-                answer=(
-                    "질문과 관련해 확인할 수 있는 자료가 부족합니다. "
-                    "관광지명을 함께 알려주시면 다시 찾아볼게요."
-                ),
+                answer=answer,
+                hits=[
+                    self._place_hit(
+                        exact_place,
+                        1.0,
+                    )
+                ],
+                grounded=grounded,
+            )
+
+        stable_intent = classify_stable_intent(query)
+        if exact_place is not None and stable_intent is not None:
+            stable_response = await self._stable_exact_answer(
+                query=query,
+                history=history,
+                exact_place=exact_place,
+                intent=stable_intent,
+            )
+            if stable_response is not None:
+                return stable_response
+
+        # -----------------------------------------------------------
+        # 3. 현재 사용 가능한 RAG 인덱스 확인
+        # -----------------------------------------------------------
+        place_records = [
+            record
+            for record in all_place_records
+            if record.embedding
+        ]
+
+        doc_records = list(
+            self.db.scalars(
+                select(
+                    KnowledgeDocument
+                ).where(
+                    KnowledgeDocument.embedding.is_not(
+                        None
+                    )
+                )
+            ).all()
+        )
+
+        # -----------------------------------------------------------
+        # 4. RAG 자체가 비어 있다면 OpenAI 일반지식 fallback
+        # -----------------------------------------------------------
+        # 이전에는 여기서 422 오류를 냈지만,
+        # 이제 RAG 장애/미동기화 때문에 챗봇 전체가 막히지 않게 합니다.
+        #
+        # 단, 운영시간/요금 같은 최신 구조화 질문은
+        # 위 단계에서 이미 따로 처리되었습니다.
+        if (
+            not place_records
+            and not doc_records
+            and exact_place is None
+        ):
+            fallback_answer = (
+                await self.openai.answer_without_context(
+                    query,
+                    history=history,
+                )
+            )
+
+            return RagSearchResponse(
+                query=query,
+                answer=fallback_answer,
                 hits=[],
                 grounded=False,
             )
 
-        # 화면의 참고자료는 LLM에 넘긴 모든 문서가 아니라 실제 상위 자료만 보여줍니다.
-        display_pool = selected[:top_k]
+        # -----------------------------------------------------------
+        # 5. 질문 embedding 생성
+        # -----------------------------------------------------------
+        vectors = await self.openai.embeddings(
+            [search_text]
+        )
+
+        if not vectors:
+            fallback_answer = (
+                await self.openai.answer_without_context(
+                    query,
+                    history=history,
+                )
+            )
+
+            return RagSearchResponse(
+                query=query,
+                answer=fallback_answer,
+                hits=[],
+                grounded=False,
+            )
+
+        vector = vectors[0]
+
+        exact_aliases = (
+            self._place_aliases(
+                exact_place.title
+            )
+            if exact_place is not None
+            else []
+        )
+
+        # -----------------------------------------------------------
+        # 6. 장소 RAG 점수
+        # -----------------------------------------------------------
+        def place_score(
+            record: PlaceRecord,
+        ) -> float:
+            score = _cosine(
+                vector,
+                record.embedding or [],
+            )
+
+            if (
+                exact_place is not None
+                and record.place_id
+                == exact_place.place_id
+            ):
+                # 질문에서 장소명이 명확히 확인되었다면
+                # embedding 오차 때문에 해당 장소가 밀리지 않게 합니다.
+                score = max(
+                    score,
+                    0.99,
+                )
+
+            return score
+
+        # -----------------------------------------------------------
+        # 7. 지식문서 RAG 점수
+        # -----------------------------------------------------------
+        def doc_score(
+            record: KnowledgeDocument,
+        ) -> float:
+            score = _cosine(
+                vector,
+                record.embedding or [],
+            )
+
+            if exact_aliases:
+                searchable = normalize_name(
+                    f"{record.title} "
+                    f"{record.text[:800]}"
+                )
+
+                if any(
+                    alias in searchable
+                    for alias in exact_aliases
+                ):
+                    score = max(
+                        score,
+                        0.96,
+                    )
+
+            return score
+
+        place_scored = sorted(
+            (
+                (
+                    place_score(record),
+                    "place",
+                    record,
+                )
+                for record in place_records
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        # DB에는 장소가 있지만 아직 embedding이 없는 경우에도
+        # 질문에서 장소가 정확히 확인됐다면 RAG 컨텍스트로 넣습니다.
+        if (
+            exact_place is not None
+            and all(
+                record.place_id
+                != exact_place.place_id
+                for _, _, record
+                in place_scored
+            )
+        ):
+            place_scored.insert(
+                0,
+                (
+                    0.99,
+                    "place",
+                    exact_place,
+                ),
+            )
+
+        doc_scored = sorted(
+            (
+                (
+                    doc_score(record),
+                    "etiquette",
+                    record,
+                )
+                for record in doc_records
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        # -----------------------------------------------------------
+        # 8. LLM에 넘길 RAG 자료 제한
+        # -----------------------------------------------------------
+        # 모든 지식문서를 한꺼번에 넘기지 않고,
+        # 장소 top-k + 지식문서 상위 일부만 사용합니다.
+        knowledge_limit = max(
+            3,
+            min(
+                6,
+                top_k + 1,
+            ),
+        )
+
+        selected = sorted(
+            (
+                place_scored[:top_k]
+                + doc_scored[:knowledge_limit]
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+
+        # -----------------------------------------------------------
+        # 9. RAG 유사도가 너무 낮으면 일반지식 fallback
+        # -----------------------------------------------------------
+        if (
+            not selected
+            or selected[0][0]
+            < self.settings.rag_min_similarity
+        ):
+            fallback_answer = (
+                await self.openai.answer_without_context(
+                    query,
+                    history=history,
+                )
+            )
+
+            return RagSearchResponse(
+                query=query,
+                answer=fallback_answer,
+                hits=[],
+                grounded=False,
+            )
+
+        # -----------------------------------------------------------
+        # 10. 사용자 화면에 보여줄 참고자료
+        # -----------------------------------------------------------
+        display_pool = selected[
+            :top_k
+        ]
 
         contexts: list[dict] = []
-        for _, source_type, record in selected:
+
+        for (
+            _,
+            source_type,
+            record,
+        ) in selected:
             if source_type == "place":
-                contexts.append(record.data or {})
+                contexts.append(
+                    record.data or {}
+                )
             else:
                 contexts.append(
                     {
-                        "title": record.title,
-                        "category": record.category,
-                        "overview": record.text,
+                        "title":
+                            record.title,
+                        "category":
+                            record.category,
+                        "overview":
+                            record.text,
                     }
                 )
 
         hits: list[RagHit] = []
-        for score, source_type, record in display_pool:
+
+        for (
+            score,
+            source_type,
+            record,
+        ) in display_pool:
             if source_type == "place":
-                hits.append(self._place_hit(record, score))
+                hits.append(
+                    self._place_hit(
+                        record,
+                        score,
+                    )
+                )
+
             else:
                 hits.append(
                     RagHit(
@@ -7574,17 +8070,52 @@ class RagService:
                         place_id=record.doc_id,
                         title=record.title,
                         category=record.category,
-                        similarity=round(score, 4),
+                        similarity=round(
+                            score,
+                            4,
+                        ),
                         overview=record.text,
                     )
                 )
 
-        answer = await self.openai.answer_with_context(query, contexts, history=history)
+        # -----------------------------------------------------------
+        # 11. 1차: RAG 기반 OpenAI 답변
+        # -----------------------------------------------------------
+        answer = (
+            await self.openai.answer_with_context(
+                query,
+                contexts,
+                history=history,
+            )
+        ).strip()
 
+        # -----------------------------------------------------------
+        # 12. RAG 자료는 검색됐지만 실제 질문의 답이 없었던 경우
+        # -----------------------------------------------------------
+        # clients.py에서 추가한 특별 신호를 여기서 잡습니다.
+        if answer == "__RAG_FALLBACK__":
+            fallback_answer = (
+                await self.openai.answer_without_context(
+                    query,
+                    history=history,
+                )
+            )
+
+            return RagSearchResponse(
+                query=query,
+                answer=fallback_answer,
+                hits=[],
+                grounded=False,
+            )
+
+        # -----------------------------------------------------------
+        # 13. RAG 자료로 정상적으로 답변한 경우
+        # -----------------------------------------------------------
         return RagSearchResponse(
             query=query,
             answer=answer,
             hits=hits,
+            grounded=True,
         )
 
 def _cosine(

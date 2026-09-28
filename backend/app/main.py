@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api import router
+from .admin_api import admin_router
 from .auth_api import auth_router
 from .compat_api import compat_router
 from .community_api import community_router
@@ -19,6 +20,8 @@ from .shared_route_api import shared_route_router, shared_route_landing_router
 from .services import SyncService
 from .companion_request_api import companion_router
 from .notification_api import notification_router
+from .push_api import push_router
+from .password_reset_api import password_reset_router
 
 settings = get_settings()
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
@@ -65,6 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(router)
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(friend_router)
 app.include_router(invite_landing_router)
@@ -74,6 +78,8 @@ app.include_router(compat_router)
 app.include_router(community_router)
 app.include_router(companion_router)
 app.include_router(notification_router)
+app.include_router(push_router)
+app.include_router(password_reset_router)
 
 
 @app.exception_handler(Exception)
