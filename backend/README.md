@@ -6,7 +6,7 @@
 
 ## Overview
 
-This is the backend for 경주한적 (Gyeongju Hanjeok), a service that recommends quiet, less-crowded travel courses around Gyeongju. **No dummy tourism data is included** — the service calls real APIs from the Korea Tourism Organization, the Korea Meteorological Administration, Kakao, Naver, YouTube, and OpenAI, and combines them with community-reported, real-time crowd observations.
+This is the backend for Gyeongju Hanjeok (경주한적), a service that recommends quiet, less-crowded travel courses around Gyeongju. **No dummy tourism data is included** — the service calls real APIs from the Korea Tourism Organization, the Korea Meteorological Administration, Kakao, Naver, YouTube, and OpenAI, and combines them with community-reported, real-time crowd observations.
 
 <br>
 
