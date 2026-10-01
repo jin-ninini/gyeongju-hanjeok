@@ -1,4 +1,4 @@
-# 📌 Gyeongju Hanjeok Frontend
+# 🗺️ Gyeongju Hanjeok Frontend
 
 > Flutter client for 경주한적 — a map-first travel app that turns real-time congestion-aware course recommendations into a day of quiet sightseeing around Gyeongju.
 

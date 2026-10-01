@@ -1,4 +1,4 @@
-# 📌 Gyeongju Hanjeok Backend
+# 🧭 Gyeongju Hanjeok Backend
 
 > FastAPI backend that treats real-time tourist congestion as a hard constraint when generating Gyeongju travel courses.
 

@@ -1,4 +1,4 @@
-# 📌 Gyeongju Hanjeok (경주한적)
+# 🍃 Gyeongju Hanjeok (경주한적)
 
 > AI travel service that treats real-time congestion as a constraint and recommends quiet, less-crowded courses around Gyeongju.
 
