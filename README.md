@@ -16,7 +16,7 @@ Visitors to Gyeongju crowd into the same attractions at predictable times, and t
 
 - **Data**: Korea Tourism Organization APIs (tourism info, visitor concentration forecast, related/hub attractions, photo gallery), KMA short-term forecast, Kakao Local/Navi, Naver Search/DataLab, YouTube Data API, and community live crowd reports
 - **Processing**: Congestion score blends official concentration data, time of day, Naver popularity, weather, and regional adjustment; community reports add a separate, capped signal
-- **Model**: NSGA-II multi-objective optimizer generates course candidates; an OpenAI-embedding RAG answers place and heritage questions from synced official content
+- **Model**: A sequential route builder picks the next nearby, quiet, preferred place from the start point, with NSGA-II as a fallback when candidates are scarce; an OpenAI-embedding RAG answers place and heritage questions from synced official content
 - **Architecture**: FastAPI backend (courses, auth, community, friends, notifications, admin) with a Flutter Android client (map, chatbot, community, QR check-in)
 
 <br>
@@ -25,7 +25,7 @@ Visitors to Gyeongju crowd into the same attractions at predictable times, and t
 
 | Feature | Endpoint | Behavior | Requires (`.env`) |
 |---|---|---|---|
-| Course recommendation | `POST /api/v1/courses/recommend` | Returns 1-3 candidates scored by quietness 45%, preference 30%, distance 25% | `PUBLIC_DATA_SERVICE_KEY`, `KMA_SERVICE_KEY`, `KAKAO_REST_API_KEY`, `NAVER_CLIENT_ID/SECRET` |
+| Course recommendation | `POST /api/v1/courses/recommend` | Builds one route from the start point, scoring places by quietness 45%, preference 30%, distance 25% | `PUBLIC_DATA_SERVICE_KEY`, `KMA_SERVICE_KEY`, `KAKAO_REST_API_KEY`, `NAVER_CLIENT_ID/SECRET` |
 | Natural-language editing | `POST /api/v1/courses/modify` | Excludes, adds, replaces, or reorders places from a chat request | Course recommendation keys, `OPENAI_API_KEY` |
 | Mid-trip recalculation | `POST /api/v1/courses/recalculate` | Finds an alternative when the next stop's congestion exceeds 8 | `PUBLIC_DATA_SERVICE_KEY` |
 | Visit check-in | `POST /api/v1/journeys/{id}/visits` | Completes a visit from on-device QR verification, without sending GPS | Course recommendation keys (to start a journey) |
@@ -35,7 +35,7 @@ Visitors to Gyeongju crowd into the same attractions at predictable times, and t
 | Auth & community | `/auth`, `/community` | Handles signup, login, posts, comments, and live crowd reports | None |
 
 - Features with keys listed above return 503 or stay disabled until those keys are set in `backend/.env`
-- The backend never receives the user's live GPS coordinate; requests use a fixed Gyeongju service anchor
+- Course requests send only the chosen start point (the device's current position by default); place lists, weather, and visit check-in never send the user's location
 - Community live reports influence routing by at most 20%, so the official congestion score is never overwritten
 - Friends, shared routes, notifications, and an admin API run alongside the course engine without extra keys
 

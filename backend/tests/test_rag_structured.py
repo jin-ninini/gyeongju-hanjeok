@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.db import Base, KnowledgeDocument, PlaceRecord
+from app.db import Base, ChatAnswerCacheRecord, KnowledgeDocument, PlaceRecord
 from app.schemas import ChatTurn
 from app.services import RagService
 
@@ -13,7 +13,7 @@ def _session():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(
         engine,
-        tables=[PlaceRecord.__table__, KnowledgeDocument.__table__],
+        tables=[PlaceRecord.__table__, KnowledgeDocument.__table__, ChatAnswerCacheRecord.__table__],
     )
     return Session(engine)
 
@@ -147,15 +147,23 @@ def test_general_rag_prioritizes_named_place_and_limits_knowledge_docs(monkeypat
         captured["contexts"] = contexts
         return "첨성대 관련 답변"
 
+    async def no_heritage(place_name):
+        return None
+
     monkeypatch.setattr(service.openai, "embeddings", fake_embeddings)
     monkeypatch.setattr(service.openai, "answer_with_context", fake_answer)
+    # Keep the test offline: skip the live Korea Heritage Service lookup.
+    monkeypatch.setattr(service.heritage, "lookup", no_heritage)
 
     result = asyncio.run(service.search("첨성대 역사 알려줘", 5))
 
     assert result.hits[0].title == "첨성대"
-    # top_k=5일 때 장소 최대 5 + 지식문서 최대 6개만 LLM에 전달한다.
-    assert len(captured["contexts"]) == 7
+    # 장소명이 명시되면 해당 장소 컨텍스트만 LLM에 전달하고, 무관한 일반 지식문서는 섞지 않는다.
     assert captured["contexts"][0]["title"] == "첨성대"
+    assert not any(
+        str(ctx.get("title", "")).startswith("일반 관광 안내")
+        for ctx in captured["contexts"]
+    )
 
 
 def test_structured_hours_falls_back_to_gyeongju_official_when_tourapi_missing(monkeypatch):

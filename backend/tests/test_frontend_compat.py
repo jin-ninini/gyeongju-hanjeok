@@ -25,7 +25,8 @@ def test_front_request_maps_to_backend_contract():
     assert mapped.free_only is True
     assert mapped.required_place_names == ["첨성대", "월정교"]
     assert mapped.excluded_place_names == ["불국사"]
-    assert "부모님과 천천히" in mapped.preferences
+    # Free-text memo is reduced to recognized intents, never passed through verbatim.
+    assert mapped.preferences == ["문화유산"]
 
 
 def test_backend_course_serializes_for_flutter():
@@ -57,6 +58,7 @@ def test_backend_course_serializes_for_flutter():
     route = payload["route"]
 
     assert route["id"] == "course-1"
-    assert route["average_quiet_score"] == 80
+    # congestion_score is on a 0-100 scale, so quiet score = 100 - 2.0.
+    assert route["average_quiet_score"] == 98
     assert route["stops"][0]["travel_minutes"] == 10
     assert route["stops"][0]["place"]["name"] == "첨성대"

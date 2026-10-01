@@ -21,7 +21,7 @@ This is the backend for Gyeongju Hanjeok (경주한적), a service that recommen
   * KMA short-term forecast `VilageFcstInfoService_2.0`
 * **Separately issued keys**: Kakao Developers REST API key, OpenAI API key, Naver Search API + DataLab API client ID/secret, YouTube Data API v3 key
 * **Optional integrations**: Firebase Admin SDK (push notifications), Gmail API OAuth credentials (password-reset email)
-* **Tech/architecture**: FastAPI + SQLAlchemy (SQLite locally, PostgreSQL in production), NSGA-II multi-objective course optimizer, OpenAI-embedding RAG search, APScheduler daily sync job
+* **Tech/architecture**: FastAPI + SQLAlchemy (SQLite locally, PostgreSQL in production), sequential nearest-preference route builder with an NSGA-II fallback, OpenAI-embedding RAG search, APScheduler daily sync job
 
 > Kakao walking directions may require partner approval. By default, driving directions use the Kakao API while walking distance is computed from real coordinates and walking speed. Once approved, set `ENABLE_KAKAO_WALKING_API=true` in `.env`.
 
@@ -29,7 +29,7 @@ This is the backend for Gyeongju Hanjeok (경주한적), a service that recommen
 
 ## Results
 
-* Real-time course recommendation (1-3 candidates) driven by congestion, weather, distance, and preference, generated with NSGA-II
+* Real-time course recommendation driven by congestion, weather, distance, and preference — one route built stop by stop from the start point, with NSGA-II used only when too few candidates remain
 * Natural-language course editing (exclude / add / replace / reorder places)
 * Automatic alternative search when a destination's congestion score exceeds 8
 * Place-based cultural-heritage etiquette guidance, and automatic visit completion after a 10-minute stay within 50m (QR check-in)
@@ -72,7 +72,7 @@ backend/
 │   ├── chatbot_knowledge.py  # chatbot heritage/etiquette knowledge base
 │   ├── clients.py        # external API clients (TourAPI, Kakao, Naver, KMA, OpenAI, YouTube)
 │   ├── services.py       # course generation, scoring, RAG sync
-│   ├── optimizer.py      # NSGA-II implementation
+│   ├── optimizer.py      # NSGA-II fallback optimizer
 │   ├── enrichment.py     # place description/content enrichment
 │   ├── geo.py, location_policy.py         # distance/grid math, fixed service anchor
 │   ├── db.py             # SQLAlchemy models
@@ -106,7 +106,7 @@ Push notifications and password-reset email are optional — leave their env var
 
 * `GET /health` — key configuration and DB status
 * `GET /api/v1/places`, `GET /api/v1/places/{place_id}` — real tourist places around the fixed Gyeongju service anchor
-* `POST /api/v1/courses/recommend` — congestion/weather/distance/preference-based NSGA-II course generation (1-3 candidates)
+* `POST /api/v1/courses/recommend` — congestion/weather/distance/preference-based course generation (one route; the Flutter client always requests `desired_course_count=1`)
 * `POST /api/v1/courses/modify` — natural-language place exclude/add/replace/reorder
 * `POST /api/v1/courses/recalculate` — alternative search when the next place's congestion exceeds 8
 * `GET /api/v1/content/{place_id}` — Naver blog / YouTube content for a place
@@ -192,16 +192,17 @@ An earlier version of the description filter over-matched: any sentence containi
 
 ### GPS / Location Privacy Policy
 
-The production backend does **not** accept the user's live GPS coordinate:
+The backend receives a user location in exactly one place — the start point of a course request:
 
 * `/places`, `/api/v1/places`, `/weather/current`, and `/api/v1/weather/current` use a fixed Gyeongju service anchor instead of a user-supplied location
 * The legacy `/places/nearby` and `/places/nearest-tourist` endpoints were removed
-* Course/route request bodies no longer accept `latitude`/`longitude`, `start_latitude`/`start_longitude`, or `current_latitude`/`current_longitude`
+* Course recommendation (`/api/v1/courses/recommend` `latitude`/`longitude`, `/routes/recommend` `start_latitude`/`start_longitude`) takes the chosen start point — the Flutter app sends the device's current position unless the user picks another start; it is used to order stops and compute the first leg
+* Mid-trip recalculation does not accept `current_latitude`/`current_longitude`; it uses the course itself
 * Visit completion (`.../visits`, `/visits/check-in`) accepts an on-device verification result, not a GPS coordinate
 * Etiquette lookup is place-based (`/etiquette/place/{place_id}`), not location-based
 * Public tourist-place coordinates are still returned in responses — those identify the *place*, not the user
 
-The Flutter app keeps using GPS locally (current-position UI, local distance/sorting, visit verification); the backend simply never receives it.
+Apart from the course start point, the Flutter app uses GPS only locally (current-position UI, local distance/sorting, visit verification).
 
 ### SQLite → PostgreSQL Migration
 

@@ -91,7 +91,7 @@ def test_kakao_daum_official_web_can_fill_missing_overview(monkeypatch):
     async def fake_kakao_web(self, query, *, limit=10):
         return [
             {
-                "title": "시내권 | 권역별 관광지 | 경주문화관광",
+                "title": "경주 탈해왕릉 | 경주문화관광",
                 "url": "https://www.gyeongju.go.kr/tour/page.do?area_uid=184",
                 "description": (
                     "탈해왕릉은 경주 내에 있는 유일한 석씨 왕의 능으로, "
@@ -114,3 +114,56 @@ def test_kakao_daum_official_web_can_fill_missing_overview(monkeypatch):
     assert source == "official_web"
     assert link is not None
     assert "gyeongju.go.kr" in link["url"]
+
+
+def _list_place(place_id: str) -> Place:
+    return Place(
+        place_id=place_id,
+        content_type_id="12",
+        title=f"테스트장소 {place_id}",
+        category="관광지",
+        latitude=35.866,
+        longitude=129.228,
+    )
+
+
+def test_list_overview_caches_empty_tourapi_result(monkeypatch):
+    monkeypatch.setattr(compat, "_PLACE_LIST_OVERVIEW_CACHE", {})
+    calls = []
+
+    async def fake_detail(self, place):
+        calls.append(place.place_id)
+        place.overview = ""
+        return place
+
+    monkeypatch.setattr(compat.TourApiClient, "detail", fake_detail)
+    settings = Settings(_env_file=None)
+
+    first = asyncio.run(compat._fill_list_overviews_from_tourapi([_list_place("empty-1")], settings))
+    second = asyncio.run(compat._fill_list_overviews_from_tourapi([_list_place("empty-1")], settings))
+
+    assert calls == ["empty-1"]
+    assert not first[0].overview
+    assert not second[0].overview
+
+
+def test_list_overview_retries_after_transient_failure(monkeypatch):
+    monkeypatch.setattr(compat, "_PLACE_LIST_OVERVIEW_CACHE", {})
+    calls = []
+
+    async def flaky_detail(self, place):
+        calls.append(place.place_id)
+        if len(calls) == 1:
+            raise compat.IntegrationError("tour_api", "temporary failure")
+        place.overview = "신라 왕릉과 소나무숲을 함께 둘러볼 수 있는 경주의 대표 유적지입니다."
+        return place
+
+    monkeypatch.setattr(compat.TourApiClient, "detail", flaky_detail)
+    settings = Settings(_env_file=None)
+
+    first = asyncio.run(compat._fill_list_overviews_from_tourapi([_list_place("flaky-1")], settings))
+    second = asyncio.run(compat._fill_list_overviews_from_tourapi([_list_place("flaky-1")], settings))
+
+    assert calls == ["flaky-1", "flaky-1"]
+    assert not first[0].overview
+    assert "소나무숲" in second[0].overview

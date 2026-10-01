@@ -1936,8 +1936,10 @@ async def _fill_list_overviews_from_tourapi(
             place
         )
 
-        if cached:
-            place.overview = cached
+        if cached is not None:
+            # 빈 문자열은 '소개문 없음'으로 캐시된 결과입니다.
+            if cached:
+                place.overview = cached
             return
 
         try:
@@ -1972,6 +1974,12 @@ async def _fill_list_overviews_from_tourapi(
                 overview
             )
         ):
+            # TourAPI가 소개문이 없다고 응답한 장소는 목록 요청마다 재조회하지 않도록
+            # 빈 결과도 캐시합니다. 일시적 실패(timeout/오류)는 캐시하지 않습니다.
+            _place_list_overview_cache_set(
+                place,
+                "",
+            )
             return
 
         # 목록 카드에서 필요한 소개문만 합칩니다.

@@ -89,9 +89,9 @@ Backend connection address by target:
 
 | Key | Purpose |
 | --- | --- |
-| `APP_MODE` | build/runtime mode flag |
+| `APP_MODE` | `live` calls the backend; any other value (e.g. `preview`) runs on bundled sample data only |
 | `BACKEND_BASE_URL` | base URL of the FastAPI backend |
-| `BACKEND_CONTRACT` | which backend route contract to target (`/api/v1/...` vs. compat aliases) |
+| `BACKEND_CONTRACT` | request payload format: `snake_flat` (default, current backend) or `camel_nested` |
 | `KAKAO_JAVASCRIPT_KEY`, `KAKAO_MAP_BASE_URL`, `KAKAO_NATIVE_APP_KEY` | Kakao SDK / map integration |
 | `DEFAULT_LATITUDE`, `DEFAULT_LONGITUDE` | fallback map center before GPS is available |
 | `CONGESTION_REFRESH_MINUTES` | client-side polling interval for congestion refresh |
@@ -108,7 +108,7 @@ The signing config is intentionally kept out of git. To build a release APK/AAB 
 
 ### Known Limitations
 
-* The app deliberately never sends the user's live GPS coordinate to the backend for course/place requests — see the backend's [GPS / Location Privacy Policy](../backend/README.md#gps--location-privacy-policy). GPS is only used locally for map centering, sorting, and QR/on-device visit verification.
+* The only location the app sends to the backend is the course start point (the current position unless the user picks another start) — see the backend's [GPS / Location Privacy Policy](../backend/README.md#gps--location-privacy-policy). Place lists, weather, and visit check-in never send GPS; it is otherwise used locally for map centering, sorting, and QR/on-device visit verification.
 * `.env` is bundled as a Flutter asset (`flutter.assets: - .env`) so it can be read at runtime via `flutter_dotenv`; this means a release build embeds whatever is in `.env` at build time, so no production secret should be a client-only key without backend-side scoping.
 
 <br>
